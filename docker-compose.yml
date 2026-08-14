@@ -12,7 +12,7 @@ services:
     ports:
       - "5001:5001"
     volumes:
-      - ./data/node1:/app/data
+      - node1-data:/app/data
 
   node2:
     build:
@@ -26,7 +26,7 @@ services:
     ports:
       - "5002:5002"
     volumes:
-      - ./data/node2:/app/data
+      - node2-data:/app/data
 
   node3:
     build:
@@ -40,4 +40,9 @@ services:
     ports:
       - "5003:5003"
     volumes:
-      - ./data/node3:/app/data
+      - node3-data:/app/data
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:

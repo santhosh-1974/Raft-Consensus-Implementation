@@ -1,26 +1,36 @@
 import express from "express";
-import dotenv   from "dotenv"
+import { loadConfig } from "./node/config.js";
+import { RaftNode } from "./raft/RaftNode.js";
+import { FileStorage } from "./storage/FileStorage.js";
+import { DataStorage } from "./state-machine/DataStorage.js";
+import { StateMachine } from "./state-machine/StateMachine.js";
+
+const config = loadConfig();
+
+const raftStorage = new FileStorage("/app/data");
+const dataStorage = new DataStorage("/app/data");
+const stateMachine = new StateMachine(dataStorage);
+
+const raftNode = new RaftNode(
+    config,
+    raftStorage,
+    stateMachine
+);
+
+await raftNode.initialize();
+await raftNode.initialize();
 const app = express();
-dotenv.config()
-
-const nodeId = process.env.NODE_ID;
-const port = Number(process.env.PORT);
-
-if (!nodeId) {
-    throw new Error("NODE_ID is required");
-}
-
-if (!port) {
-    throw new Error("PORT is required");
-}
 
 app.get("/health", (_req, res) => {
     res.json({
-        nodeId,
-        status: "healthy"
+        nodeId: raftNode.getNodeId(),
+        state: raftNode.getState(),
+        term: raftNode.getTerm()
     });
 });
 
-app.listen(port, "0.0.0.0", () => {
-    console.log(`${nodeId} listening on port ${port}`);
+app.listen(config.port, "0.0.0.0", () => {
+    console.log(
+        `${config.nodeId} started as ${raftNode.getState()}`
+    );
 });
