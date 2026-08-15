@@ -21,6 +21,7 @@ await raftNode.initialize();
 await raftNode.initialize();
 const app = express();
 
+app.use(express.json());
 app.get("/health", (_req, res) => {
     res.json({
         nodeId: raftNode.getNodeId(),
@@ -28,7 +29,11 @@ app.get("/health", (_req, res) => {
         term: raftNode.getTerm()
     });
 });
+app.post("/internal/request-vote", async (req, res) => {
+    const response = await raftNode.handleRequestVote(req.body);
 
+    res.json(response);
+});
 app.listen(config.port, "0.0.0.0", () => {
     console.log(
         `${config.nodeId} started as ${raftNode.getState()}`
