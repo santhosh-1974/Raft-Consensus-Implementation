@@ -3,7 +3,7 @@ import { FileStorage } from "../storage/FileStorage.js";
 import { LogEntry, NodeState } from "./types.js";
 import { StateMachine } from "../state-machine/StateMachine.js";
 import { ElectionTimer } from "./ElectionTimer.js";
-import { RequestVoteRequest, RequestVoteResponse } from "./rpc.js";
+import { AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, RequestVoteResponse } from "./rpc.js";
 
 export class RaftNode {
     private readonly nodeId: string;
@@ -11,6 +11,7 @@ export class RaftNode {
     private readonly peers: string[];
     private readonly electionTimer: ElectionTimer;
 
+    private heartbeatTimer: NodeJS.Timeout | null = null;
     private state: NodeState = NodeState.FOLLOWER;
     private currentTerm = 0;
     private votedFor: string | null = null;
@@ -168,8 +169,90 @@ export class RaftNode {
     private becomeLeader(): void {
         this.state = NodeState.LEADER;
         this.electionTimer.stop();
+        this.startHeartbeats();
+
         console.log(
             `${this.nodeId} became LEADER for term ${this.currentTerm}`
         );
+    }
+    async handleAppendEntries(
+        request: AppendEntriesRequest
+    ): Promise<AppendEntriesResponse> {
+
+        if (request.term < this.currentTerm) {
+            return {
+                term: this.currentTerm,
+                success: false
+            };
+        }
+
+        if (request.term > this.currentTerm) {
+            this.currentTerm = request.term;
+            this.votedFor = null;
+            await this.persist();
+        }
+
+        this.state = NodeState.FOLLOWER;
+        this.electionTimer.reset();
+
+        return {
+            term: this.currentTerm,
+            success: true
+        };
+    }
+    private startHeartbeats(): void {
+        this.stopHeartbeats();
+        this.heartbeatTimer = setInterval(() => {
+            void this.sendHeartbeats();
+        }, 500);
+    }
+    private stopHeartbeats(): void {
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = null;
+        }
+    }
+    private async sendHeartbeats(): Promise<void> {
+        if (this.state !== NodeState.LEADER) return;
+        await Promise.all(
+            this.peers.map(peer =>
+                this.sendHeartbeat(peer)
+            )
+        );
+    }
+    private async sendHeartbeat(peer: string): Promise<void> {
+        try {
+            const response = await fetch(
+                `http://${peer}/internal/append-entries`,
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        term: this.currentTerm,
+                        leaderId: this.nodeId
+                    })
+                }
+            );
+
+            if (!response.ok) {
+                return;
+            }
+
+            const result = await response.json();
+
+            if (result.term > this.currentTerm) {
+                this.currentTerm = result.term;
+                this.state = NodeState.FOLLOWER;
+                this.votedFor = null;
+
+                await this.persist();
+
+                this.stopHeartbeats();
+            }
+        } catch {
+            // Peer may be unavailable.
+        }
     }
 }

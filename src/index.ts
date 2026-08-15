@@ -34,6 +34,11 @@ app.post("/internal/request-vote", async (req, res) => {
 
     res.json(response);
 });
+app.post("/internal/append-entries", async (req, res) => {
+    const response = await raftNode.handleAppendEntries(req.body);
+
+    res.json(response);
+});
 app.listen(config.port, "0.0.0.0", () => {
     console.log(
         `${config.nodeId} started as ${raftNode.getState()}`
