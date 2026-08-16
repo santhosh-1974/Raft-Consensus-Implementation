@@ -12,13 +12,11 @@ export class DataStorage {
     async load(): Promise<Data> {
         try {
             const data = await fs.readFile(this.filePath, "utf-8");
-
             return JSON.parse(data) as Data;
         } catch (error: any) {
             if (error.code === "ENOENT") {
                 return {};
             }
-
             throw error;
         }
     }

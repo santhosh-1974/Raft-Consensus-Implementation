@@ -27,10 +27,12 @@ export class RaftNode {
         this.peers = config.peers;
 
         this.electionTimer = new ElectionTimer(
-            3000,
             1500,
+            3000,
             () => {
-                void this.startElection();
+                if (this.state !== NodeState.LEADER) {
+                    void this.startElection();
+                }
             }
         );
     }
@@ -67,6 +69,11 @@ export class RaftNode {
         return this.nodeId;
     }
     private async startElection(): Promise<void> {
+        if (this.state === NodeState.LEADER) {
+            return;
+        }
+
+        this.electionTimer.stop();
 
         this.state = NodeState.CANDIDATE;
         this.currentTerm++;
@@ -74,14 +81,22 @@ export class RaftNode {
 
         await this.persist();
 
-        this.electionTimer.reset();
+        const electionTerm = this.currentTerm;
 
         let votes = 1;
+
         const results = await Promise.all(
             this.peers.map(peer =>
-                this.requestVoteFromPeer(peer)
+                this.requestVoteFromPeer(peer, electionTerm)
             )
         );
+
+        if (
+            this.state !== NodeState.CANDIDATE ||
+            this.currentTerm !== electionTerm
+        ) {
+            return;
+        }
 
         for (const granted of results) {
             if (granted) {
@@ -89,13 +104,23 @@ export class RaftNode {
             }
         }
 
+        const majority =
+            Math.floor((this.peers.length + 1) / 2) + 1;
+
         console.log(
-            `${this.nodeId} received ${votes} votes for term ${this.currentTerm}`
+            `${this.nodeId} received ${votes}/${majority} votes for term ${electionTerm}`
         );
+
+        if (votes >= majority) {
+            this.becomeLeader();
+        } else {
+            this.electionTimer.reset();
+        }
     }
     async handleRequestVote(
         request: RequestVoteRequest
     ): Promise<RequestVoteResponse> {
+
         if (request.term < this.currentTerm) {
             return {
                 term: this.currentTerm,
@@ -111,24 +136,35 @@ export class RaftNode {
             await this.persist();
         }
 
-        if (this.votedFor === null || this.votedFor === request.candidateId) {
-            this.votedFor = request.candidateId;
-            await this.persist();
-            this.electionTimer.reset();
+        const logUpToDate = this.isCandidateLogUpToDate(
+            request.lastLogIndex,
+            request.lastLogTerm
+        );
 
+        const canVote =
+            (this.votedFor === null ||
+                this.votedFor === request.candidateId) &&
+            logUpToDate;
+
+        if (!canVote) {
             return {
                 term: this.currentTerm,
-                voteGranted: true
+                voteGranted: false
             };
         }
 
+        this.votedFor = request.candidateId;
+        await this.persist();
+        this.electionTimer.reset();
+
         return {
             term: this.currentTerm,
-            voteGranted: false
+            voteGranted: true
         };
     }
     private async requestVoteFromPeer(
-        peer: string
+        peer: string,
+        electionTerm: number
     ): Promise<boolean> {
         try {
             const response = await fetch(
@@ -139,8 +175,10 @@ export class RaftNode {
                         "Content-Type": "application/json"
                     },
                     body: JSON.stringify({
-                        term: this.currentTerm,
-                        candidateId: this.nodeId
+                        term: electionTerm,
+                        candidateId: this.nodeId,
+                        lastLogIndex: this.getLastLogIndex(),
+                        lastLogTerm: this.getLastLogTerm()
                     })
                 }
             );
@@ -157,10 +195,17 @@ export class RaftNode {
                 this.votedFor = null;
 
                 await this.persist();
+                this.electionTimer.reset();
 
                 return false;
             }
 
+            if (
+                this.state !== NodeState.CANDIDATE ||
+                this.currentTerm !== electionTerm
+            ) {
+                return false;
+            }
             return result.voteGranted;
         } catch {
             return false;
@@ -255,4 +300,26 @@ export class RaftNode {
             // Peer may be unavailable.
         }
     }
+    private getLastLogIndex(): number {
+        return this.log.length;
+    }
+
+    private getLastLogTerm(): number {
+        if (this.log.length === 0) return 0;
+        return this.log[this.log.length - 1].term;
+    }
+    private isCandidateLogUpToDate(
+        candidateLastIndex: number,
+        candidateLastTerm: number
+    ): boolean {
+        const myLastIndex = this.getLastLogIndex();
+        const myLastTerm = this.getLastLogTerm();
+
+        if (candidateLastTerm !== myLastTerm) {
+            return candidateLastTerm > myLastTerm;
+        }
+
+        return candidateLastIndex >= myLastIndex;
+    }
+
 }
