@@ -8,7 +8,7 @@ export interface LogEntry {
     index: number;
     term: number;
     command: {
-        type: string;
+        type: "SET" | "DELETE";
         key: string;
         value?: string;
     };

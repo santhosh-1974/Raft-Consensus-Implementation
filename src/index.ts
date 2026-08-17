@@ -29,6 +29,19 @@ app.get("/health", (_req, res) => {
         term: raftNode.getTerm()
     });
 });
+app.post("/kv/set", async (req, res) => {
+    const { key, value } = req.body;
+
+    if (!key || value === undefined) {
+        return res.status(400).json({
+            error: "key and value are required"
+        });
+    }
+
+    const result = await raftNode.set(key, String(value));
+
+    res.json(result);
+});
 app.post("/internal/request-vote", async (req, res) => {
     const response = await raftNode.handleRequestVote(req.body);
 

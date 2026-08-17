@@ -1,6 +1,11 @@
+import { LogEntry } from "./types.js";
 export interface AppendEntriesRequest {
     term: number;
     leaderId: string;
+    prevLogIndex: number;
+    prevLogTerm: number;
+    entries: LogEntry[];
+    leaderCommit: number;
 }
 
 export interface AppendEntriesResponse {
