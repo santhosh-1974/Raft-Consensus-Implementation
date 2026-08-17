@@ -19,7 +19,7 @@ export class StateMachine {
     }
 
     async get(key: string): Promise<string | undefined> {
-        return this.data[key];
+        return this.data[key] ?? null;
     }
 
     async delete(key: string): Promise<void> {

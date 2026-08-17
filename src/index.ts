@@ -37,9 +37,14 @@ app.post("/kv/set", async (req, res) => {
             error: "key and value are required"
         });
     }
-
     const result = await raftNode.set(key, String(value));
-
+    res.json(result);
+});
+app.get("/kv/:key", async (req, res) => {
+    const result = await raftNode.get(req.params.key);
+    if (!result.success) {
+        return res.status(307).json(result);
+    }
     res.json(result);
 });
 app.post("/internal/request-vote", async (req, res) => {
@@ -52,6 +57,7 @@ app.post("/internal/append-entries", async (req, res) => {
 
     res.json(response);
 });
+
 app.listen(config.port, "0.0.0.0", () => {
     console.log(
         `${config.nodeId} started as ${raftNode.getState()}`

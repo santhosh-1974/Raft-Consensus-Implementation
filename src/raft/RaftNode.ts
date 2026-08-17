@@ -373,14 +373,29 @@ export class RaftNode {
         };
 
         this.log.push(entry);
-
         await this.persist();
-
         const replicated = await this.replicateEntry(entry);
 
         return {
             success: replicated,
             index: entry.index
+        };
+    }
+    async get(key: string) {
+        if (this.state !== NodeState.LEADER) {
+            return {
+                success: false,
+                leader: null,
+                value: null
+            };
+        }
+
+        const value = await this.stateMachine.get(key);
+
+        return {
+            success: true,
+            leader: this.nodeId,
+            value
         };
     }
     private async replicateEntry(entry: LogEntry): Promise<boolean> {
@@ -389,22 +404,10 @@ export class RaftNode {
                 this.replicateToPeer(peer)
             )
         );
-        const majority =
-            Math.floor((this.peers.length + 1) / 2) + 1;
-        let replicated = 1; // leader itself
-        for (const peer of this.peers) {
-            const match = this.matchIndex.get(peer) ?? 0;
 
-            if (match >= entry.index) {
-                replicated++;
-            }
-        }
-        if (replicated >= majority) {
-            this.commitIndex = entry.index;
-            await this.applyCommittedEntries();
-            return true;
-        }
-        return false;
+        await this.updateCommitIndex();
+
+        return this.commitIndex >= entry.index;
     }
     private async sendLogEntry(peer: string): Promise<boolean> {
         const next = this.nextIndex.get(peer) ?? 1;
@@ -542,6 +545,7 @@ export class RaftNode {
             if (result.success) {
                 const lastSentIndex =
                     prevLogIndex + entries.length;
+
                 this.matchIndex.set(
                     peer,
                     lastSentIndex
@@ -551,6 +555,9 @@ export class RaftNode {
                     peer,
                     lastSentIndex + 1
                 );
+
+                await this.updateCommitIndex();
+
                 return;
             }
             // Follower rejected the previous log position.
@@ -561,5 +568,29 @@ export class RaftNode {
         } catch {
             // Peer unavailable.
         }
+    }
+    private async updateCommitIndex(): Promise<void> {
+        const indexes = [
+            this.log.length,
+            ...this.matchIndex.values()
+        ].sort((a, b) => b - a);
+
+        const majorityIndex =
+            indexes[Math.floor(indexes.length / 2)];
+
+        if (majorityIndex <= this.commitIndex) {
+            return;
+        }
+        const entry = this.log[majorityIndex - 1];
+        if (!entry) {
+            return;
+        }
+        // Raft only directly commits an entry from
+        // the current term using the majority rule.
+        if (entry.term !== this.currentTerm) {
+            return;
+        }
+        this.commitIndex = majorityIndex;
+        await this.applyCommittedEntries();
     }
 }
