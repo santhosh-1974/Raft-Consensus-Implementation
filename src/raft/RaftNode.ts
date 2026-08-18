@@ -12,6 +12,7 @@ export class RaftNode {
     private readonly electionTimer: ElectionTimer;
 
     private heartbeatTimer: NodeJS.Timeout | null = null;
+    private readonly rpcTimeoutMs = 1_000;
     private state: NodeState = NodeState.FOLLOWER;
     private currentTerm = 0;
     private votedFor: string | null = null;
@@ -179,6 +180,7 @@ export class RaftNode {
                 `http://${peer}/internal/request-vote`,
                 {
                     method: "POST",
+                    signal: AbortSignal.timeout(this.rpcTimeoutMs),
                     headers: {
                         "Content-Type": "application/json"
                     },
@@ -424,6 +426,7 @@ export class RaftNode {
                 `http://${peer}/internal/append-entries`,
                 {
                     method: "POST",
+                    signal: AbortSignal.timeout(this.rpcTimeoutMs),
                     headers: {
                         "Content-Type": "application/json"
                     },
@@ -514,6 +517,7 @@ export class RaftNode {
                 `http://${peer}/internal/append-entries`,
                 {
                     method: "POST",
+                    signal: AbortSignal.timeout(this.rpcTimeoutMs),
                     headers: {
                         "Content-Type": "application/json"
                     },

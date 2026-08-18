@@ -18,7 +18,6 @@ const raftNode = new RaftNode(
 );
 
 await raftNode.initialize();
-await raftNode.initialize();
 const app = express();
 
 app.use(express.json());
