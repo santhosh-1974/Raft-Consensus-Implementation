@@ -19,6 +19,7 @@ export class RaftNode {
     private log: LogEntry[] = [];
     private nextIndex = new Map<string, number>();
     private matchIndex = new Map<string, number>();
+    private replicating = new Set<string>();
     private commitIndex = 0;
     private lastApplied = 0;
 
@@ -411,76 +412,6 @@ export class RaftNode {
 
         return this.commitIndex >= entry.index;
     }
-    private async sendLogEntry(peer: string): Promise<boolean> {
-        const next = this.nextIndex.get(peer) ?? 1;
-        const prevLogIndex = next - 1;
-        const prevLogTerm =
-            prevLogIndex === 0
-                ? 0
-                : this.log[prevLogIndex - 1]?.term;
-
-        const entries = this.log.slice(next - 1);
-
-        try {
-            const response = await fetch(
-                `http://${peer}/internal/append-entries`,
-                {
-                    method: "POST",
-                    signal: AbortSignal.timeout(this.rpcTimeoutMs),
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        term: this.currentTerm,
-                        leaderId: this.nodeId,
-                        prevLogIndex,
-                        prevLogTerm,
-                        entries,
-                        leaderCommit: this.commitIndex
-                    })
-                }
-            );
-
-            if (!response.ok) {
-                return false;
-            }
-
-            const result: AppendEntriesResponse =
-                await response.json();
-            // Follower knows about a newer term
-            if (result.term > this.currentTerm) {
-                this.currentTerm = result.term;
-                this.state = NodeState.FOLLOWER;
-                this.votedFor = null;
-                await this.persist();
-                this.stopHeartbeats();
-                return false;
-            }
-            if (result.success) {
-                this.matchIndex.set(
-                    peer,
-                    this.log.length
-                );
-                this.nextIndex.set(
-                    peer,
-                    this.log.length + 1
-                );
-                return true;
-            }
-            // Follower rejected because its log doesn't match.
-            const newNextIndex = Math.max(
-                1,
-                next - 1
-            );
-            this.nextIndex.set(
-                peer,
-                newNextIndex
-            );
-            return false;
-        } catch {
-            return false;
-        }
-    }
     private async applyCommittedEntries(): Promise<void> {
         while (this.lastApplied < this.commitIndex) {
             this.lastApplied++;
@@ -503,74 +434,91 @@ export class RaftNode {
 
         await this.persist();
     }
+
     private async replicateToPeer(peer: string): Promise<void> {
-        const next = this.nextIndex.get(peer) ?? 1;
-        const prevLogIndex = next - 1;
-        const prevLogTerm =
-            prevLogIndex === 0
-                ? 0
-                : this.log[prevLogIndex - 1]?.term;
+        if (this.replicating.has(peer)) {
+            return;
+        }
 
-        const entries = this.log.slice(next - 1);
+        this.replicating.add(peer);
+
         try {
-            const response = await fetch(
-                `http://${peer}/internal/append-entries`,
-                {
-                    method: "POST",
-                    signal: AbortSignal.timeout(this.rpcTimeoutMs),
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        term: this.currentTerm,
-                        leaderId: this.nodeId,
-                        prevLogIndex,
-                        prevLogTerm,
-                        entries,
-                        leaderCommit: this.commitIndex
-                    })
+            while (this.state === NodeState.LEADER) {
+                const next = this.nextIndex.get(peer) ?? 1;
+
+                const prevLogIndex = next - 1;
+
+                const prevLogTerm =
+                    prevLogIndex === 0
+                        ? 0
+                        : this.log[prevLogIndex - 1]?.term;
+
+                const entries = this.log.slice(next - 1);
+
+                try {
+                    const response = await fetch(
+                        `http://${peer}/internal/append-entries`,
+                        {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json"
+                            },
+                            body: JSON.stringify({
+                                term: this.currentTerm,
+                                leaderId: this.nodeId,
+                                prevLogIndex,
+                                prevLogTerm,
+                                entries,
+                                leaderCommit: this.commitIndex
+                            })
+                        }
+                    );
+
+                    if (!response.ok) {
+                        return;
+                    }
+
+                    const result: AppendEntriesResponse =
+                        await response.json();
+
+                    if (result.term > this.currentTerm) {
+                        this.currentTerm = result.term;
+                        this.state = NodeState.FOLLOWER;
+                        this.votedFor = null;
+
+                        await this.persist();
+                        this.stopHeartbeats();
+
+                        return;
+                    }
+
+                    if (result.success) {
+                        const lastSentIndex =
+                            prevLogIndex + entries.length;
+
+                        this.matchIndex.set(
+                            peer,
+                            lastSentIndex
+                        );
+
+                        this.nextIndex.set(
+                            peer,
+                            lastSentIndex + 1
+                        );
+
+                        return;
+                    }
+
+                    this.nextIndex.set(
+                        peer,
+                        Math.max(1, next - 1)
+                    );
+                } catch {
+                    return;
                 }
-            );
-            if (!response.ok) {
-                return;
             }
-            const result: AppendEntriesResponse =
-                await response.json();
-            if (result.term > this.currentTerm) {
-                this.currentTerm = result.term;
-                this.state = NodeState.FOLLOWER;
-                this.votedFor = null;
-
-                await this.persist();
-                this.stopHeartbeats();
-
-                return;
-            }
-            if (result.success) {
-                const lastSentIndex =
-                    prevLogIndex + entries.length;
-
-                this.matchIndex.set(
-                    peer,
-                    lastSentIndex
-                );
-
-                this.nextIndex.set(
-                    peer,
-                    lastSentIndex + 1
-                );
-
-                await this.updateCommitIndex();
-
-                return;
-            }
-            // Follower rejected the previous log position.
-            this.nextIndex.set(
-                peer,
-                Math.max(1, next - 1)
-            );
-        } catch {
-            // Peer unavailable.
+        } finally {
+            this.replicating.delete(peer);
         }
     }
     private async updateCommitIndex(): Promise<void> {

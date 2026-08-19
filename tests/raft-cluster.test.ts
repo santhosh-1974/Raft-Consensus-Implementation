@@ -679,7 +679,7 @@ describe("Raft cluster integration", () => {
 
             expect(
                 (leader as any).nextIndex.get("node2")
-            ).toBe(2);
+            ).toBe(4);
 
             // Second attempt sends the correct entry at index 2
             // and the following entry at index 3.
