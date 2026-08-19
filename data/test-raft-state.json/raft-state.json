@@ -1,0 +1,16 @@
+{
+  "currentTerm": 5,
+  "votedFor": "node1",
+  "log": [
+    {
+      "index": 1,
+      "term": 5,
+      "command": {
+        "key": "x",
+        "value": "100"
+      }
+    }
+  ],
+  "commitIndex": 1,
+  "lastApplied": 1
+}
