@@ -22,6 +22,7 @@ export class RaftNode {
     private replicating = new Set<string>();
     private commitIndex = 0;
     private lastApplied = 0;
+    private electionInProgress = false;
 
     constructor(
         config: NodeConfig,
@@ -79,52 +80,66 @@ export class RaftNode {
         return this.nodeId;
     }
     private async startElection(): Promise<void> {
-        if (this.state === NodeState.LEADER) {
-            return;
-        }
-
-        this.electionTimer.stop();
-
-        this.state = NodeState.CANDIDATE;
-        this.currentTerm++;
-        this.votedFor = this.nodeId;
-
-        await this.persist();
-
-        const electionTerm = this.currentTerm;
-
-        let votes = 1;
-
-        const results = await Promise.all(
-            this.peers.map(peer =>
-                this.requestVoteFromPeer(peer, electionTerm)
-            )
-        );
-
         if (
-            this.state !== NodeState.CANDIDATE ||
-            this.currentTerm !== electionTerm
+            this.state === NodeState.LEADER ||
+            this.electionInProgress
         ) {
             return;
         }
 
-        for (const granted of results) {
-            if (granted) {
-                votes++;
+        this.electionInProgress = true;
+
+        try {
+            this.electionTimer.stop();
+
+            this.state = NodeState.CANDIDATE;
+            this.currentTerm++;
+            this.votedFor = this.nodeId;
+
+            await this.persist();
+
+            const electionTerm = this.currentTerm;
+
+            let votes = 1;
+
+            const results = await Promise.all(
+                this.peers.map(peer =>
+                    this.requestVoteFromPeer(
+                        peer,
+                        electionTerm
+                    )
+                )
+            );
+
+            // Election is no longer relevant.
+            // Another election or a higher term may have taken over.
+            if (
+                this.state !== NodeState.CANDIDATE ||
+                this.currentTerm !== electionTerm
+            ) {
+                return;
             }
-        }
 
-        const majority =
-            Math.floor((this.peers.length + 1) / 2) + 1;
+            for (const granted of results) {
+                if (granted) {
+                    votes++;
+                }
+            }
 
-        console.log(
-            `${this.nodeId} received ${votes}/${majority} votes for term ${electionTerm}`
-        );
+            const majority =
+                Math.floor((this.peers.length + 1) / 2) + 1;
 
-        if (votes >= majority) {
-            this.becomeLeader();
-        } else {
-            this.electionTimer.reset();
+            console.log(
+                `${this.nodeId} received ${votes}/${majority} votes for term ${electionTerm}`
+            );
+
+            if (votes >= majority) {
+                this.becomeLeader();
+            } else {
+                this.electionTimer.reset();
+            }
+        } finally {
+            this.electionInProgress = false;
         }
     }
     async handleRequestVote(
@@ -455,16 +470,20 @@ export class RaftNode {
 
                 const entries = this.log.slice(next - 1);
 
+                // Capture the term for this specific RPC.
+                const replicationTerm = this.currentTerm;
+
                 try {
                     const response = await fetch(
                         `http://${peer}/internal/append-entries`,
                         {
                             method: "POST",
+                            signal: AbortSignal.timeout(this.rpcTimeoutMs),
                             headers: {
                                 "Content-Type": "application/json"
                             },
                             body: JSON.stringify({
-                                term: this.currentTerm,
+                                term: replicationTerm,
                                 leaderId: this.nodeId,
                                 prevLogIndex,
                                 prevLogTerm,
@@ -481,6 +500,7 @@ export class RaftNode {
                     const result: AppendEntriesResponse =
                         await response.json();
 
+                    // Follower has a newer term.
                     if (result.term > this.currentTerm) {
                         this.currentTerm = result.term;
                         this.state = NodeState.FOLLOWER;
@@ -489,6 +509,14 @@ export class RaftNode {
                         await this.persist();
                         this.stopHeartbeats();
 
+                        return;
+                    }
+
+                    // Ignore a response belonging to an old term.
+                    if (
+                        this.state !== NodeState.LEADER ||
+                        this.currentTerm !== replicationTerm
+                    ) {
                         return;
                     }
 
@@ -505,15 +533,19 @@ export class RaftNode {
                             peer,
                             lastSentIndex + 1
                         );
-
+                        await this.updateCommitIndex();
                         return;
                     }
 
+                    // Log mismatch.
+                    // Move backwards and retry immediately.
                     this.nextIndex.set(
                         peer,
                         Math.max(1, next - 1)
                     );
+
                 } catch {
+                    // Peer unavailable.
                     return;
                 }
             }
@@ -544,5 +576,13 @@ export class RaftNode {
         }
         this.commitIndex = majorityIndex;
         await this.applyCommittedEntries();
+    }
+    async shutdown(): Promise<void> {
+        this.electionTimer.stop();
+        this.stopHeartbeats();
+
+        this.state = NodeState.FOLLOWER;
+
+        await this.persist();
     }
 }

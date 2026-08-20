@@ -18,6 +18,21 @@ const raftNode = new RaftNode(
 );
 
 await raftNode.initialize();
+process.on("SIGTERM", async () => {
+    console.log("Received SIGTERM, shutting down...");
+
+    await raftNode.shutdown();
+
+    process.exit(0);
+});
+
+process.on("SIGINT", async () => {
+    console.log("Received SIGINT, shutting down...");
+
+    await raftNode.shutdown();
+
+    process.exit(0);
+});
 const app = express();
 
 app.use(express.json());

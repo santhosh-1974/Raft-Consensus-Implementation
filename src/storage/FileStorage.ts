@@ -14,8 +14,8 @@ export class FileStorage {
             const data = await fs.readFile(this.filePath, "utf-8");
 
             return JSON.parse(data) as RaftPersistentState;
-        } catch (error: any) {
-            if (error.code === "ENOENT") {
+        } catch (error: unknown) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") {
                 return null;
             }
 
