@@ -5,6 +5,11 @@ import { StateMachine } from "../state-machine/StateMachine.js";
 import { ElectionTimer } from "./ElectionTimer.js";
 import { AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, RequestVoteResponse } from "./rpc.js";
 
+type RaftNodeConfig = Pick<
+    NodeConfig,
+    "nodeId" | "port" | "peers"
+>;
+
 export class RaftNode {
     private readonly nodeId: string;
     private readonly port: number;
@@ -14,18 +19,20 @@ export class RaftNode {
     private heartbeatTimer: NodeJS.Timeout | null = null;
     private readonly rpcTimeoutMs = 1_000;
     private state: NodeState = NodeState.FOLLOWER;
+    private leaderId: string | null = null;
     private currentTerm = 0;
     private votedFor: string | null = null;
     private log: LogEntry[] = [];
     private nextIndex = new Map<string, number>();
     private matchIndex = new Map<string, number>();
-    private replicating = new Set<string>();
+    private replicating = new Map<string, Promise<void>>();
     private commitIndex = 0;
     private lastApplied = 0;
     private electionInProgress = false;
+    private writeQueue: Promise<void> = Promise.resolve();
 
     constructor(
-        config: NodeConfig,
+        config: RaftNodeConfig,
         private readonly storage: FileStorage,
         private readonly stateMachine: StateMachine
     ) {
@@ -79,6 +86,11 @@ export class RaftNode {
     getNodeId(): string {
         return this.nodeId;
     }
+
+    getLeaderId(): string | null {
+        return this.leaderId;
+    }
+
     private async startElection(): Promise<void> {
         if (
             this.state === NodeState.LEADER ||
@@ -242,6 +254,7 @@ export class RaftNode {
             return;
         }
         this.state = NodeState.LEADER;
+        this.leaderId = this.nodeId;
         this.electionTimer.stop();
         for (const peer of this.peers) {
             this.nextIndex.set(
@@ -277,6 +290,7 @@ export class RaftNode {
         }
 
         this.state = NodeState.FOLLOWER;
+        this.leaderId = request.leaderId;
         this.electionTimer.reset();
 
         // Check previous log entry
@@ -376,28 +390,51 @@ export class RaftNode {
         if (this.state !== NodeState.LEADER) {
             return {
                 success: false,
-                leader: null
+                leader: this.leaderId
             };
         }
 
-        const entry: LogEntry = {
-            index: this.log.length + 1,
-            term: this.currentTerm,
-            command: {
-                type: "SET",
-                key,
-                value
+        let result!: {
+            success: boolean;
+            index: number;
+        };
+
+        const operation = this.writeQueue.then(async () => {
+            if (this.state !== NodeState.LEADER) {
+                result = {
+                    success: false,
+                    index: -1
+                };
+                return;
             }
-        };
 
-        this.log.push(entry);
-        await this.persist();
-        const replicated = await this.replicateEntry(entry);
+            const entry: LogEntry = {
+                index: this.log.length + 1,
+                term: this.currentTerm,
+                command: {
+                    type: "SET",
+                    key,
+                    value
+                }
+            };
 
-        return {
-            success: replicated,
-            index: entry.index
-        };
+            this.log.push(entry);
+
+            await this.persist();
+
+            const replicated = await this.replicateEntry(entry);
+
+            result = {
+                success: replicated,
+                index: entry.index
+            };
+        });
+
+        this.writeQueue = operation.catch(() => { });
+
+        await operation;
+
+        return result;
     }
     async get(key: string) {
         if (this.state !== NodeState.LEADER) {
@@ -416,14 +453,74 @@ export class RaftNode {
             value
         };
     }
-    private async replicateEntry(entry: LogEntry): Promise<boolean> {
-        await Promise.all(
-            this.peers.map(peer =>
-                this.replicateToPeer(peer)
-            )
-        );
+    async delete(key: string) {
+        if (this.state !== NodeState.LEADER) {
+            return {
+                success: false,
+                leader: this.leaderId
+            };
+        }
 
-        await this.updateCommitIndex();
+        let result!: {
+            success: boolean;
+            index: number;
+        };
+
+        const operation = this.writeQueue.then(async () => {
+            if (this.state !== NodeState.LEADER) {
+                result = {
+                    success: false,
+                    index: -1
+                };
+                return;
+            }
+
+            const entry: LogEntry = {
+                index: this.log.length + 1,
+                term: this.currentTerm,
+                command: {
+                    type: "DELETE",
+                    key
+                }
+            };
+
+            this.log.push(entry);
+
+            await this.persist();
+
+            const replicated = await this.replicateEntry(entry);
+
+            result = {
+                success: replicated,
+                index: entry.index
+            };
+        });
+
+        this.writeQueue = operation.catch(() => { });
+
+        await operation;
+
+        return result;
+    }
+    private async replicateEntry(entry: LogEntry): Promise<boolean> {
+        while (
+            this.state === NodeState.LEADER &&
+            this.commitIndex < entry.index
+        ) {
+            const previousCommitIndex = this.commitIndex;
+
+            await Promise.all(
+                this.peers.map(peer =>
+                    this.replicateToPeer(peer)
+                )
+            );
+
+            await this.updateCommitIndex();
+
+            if (this.commitIndex === previousCommitIndex) {
+                break;
+            }
+        }
 
         return this.commitIndex >= entry.index;
     }
@@ -450,13 +547,26 @@ export class RaftNode {
         await this.persist();
     }
 
-    private async replicateToPeer(peer: string): Promise<void> {
-        if (this.replicating.has(peer)) {
-            return;
+    private replicateToPeer(peer: string): Promise<void> {
+        const inFlight = this.replicating.get(peer);
+
+        if (inFlight) {
+            return inFlight;
         }
 
-        this.replicating.add(peer);
+        const replication = this.replicateToPeerInternal(peer);
+        this.replicating.set(peer, replication);
 
+        void replication.finally(() => {
+            if (this.replicating.get(peer) === replication) {
+                this.replicating.delete(peer);
+            }
+        });
+
+        return replication;
+    }
+
+    private async replicateToPeerInternal(peer: string): Promise<void> {
         try {
             while (this.state === NodeState.LEADER) {
                 const next = this.nextIndex.get(peer) ?? 1;
@@ -550,7 +660,6 @@ export class RaftNode {
                 }
             }
         } finally {
-            this.replicating.delete(peer);
         }
     }
     private async updateCommitIndex(): Promise<void> {
