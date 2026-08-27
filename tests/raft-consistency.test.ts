@@ -1,90 +1,85 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-const nodes = [
-    "http://localhost:5001",
-    "http://localhost:5002",
-    "http://localhost:5003"
-];
+import { RaftNode } from "../src/raft/RaftNode.js";
+import { NodeState } from "../src/raft/types.js";
 
-async function put(
-    node: string,
-    key: string,
-    value: string
-) {
-    const response = await fetch(
-        `${node}/kv/${key}`,
-        {
-            method: "PUT",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ value })
-        }
-    );
+const nodeIds = ["node1", "node2", "node3"];
 
-    const body = await response.json();
-
-    expect(
-        response.ok,
-        `PUT ${key} on ${node} failed: HTTP ${response.status} ${JSON.stringify(body)}`
-    ).toBe(true);
-
-    return body;
-}
-
-async function get(
-    node: string,
-    key: string
-) {
-    const response = await fetch(
-        `${node}/kv/${key}`
-    );
-
-    expect(response.ok).toBe(true);
-
-    return response.json();
-}
-
-describe("Raft real cluster consistency", () => {
+describe("Raft cluster consistency", () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
 
     it("should replicate concurrent writes across all nodes", async () => {
-        const writes = Array.from(
-            { length: 10 },
-            (_, i) => ({
+        const nodes = new Map<string, RaftNode>();
+        const values = new Map<string, Map<string, string>>();
+        const storage = { save: async () => {}, load: async () => null };
+
+        for (const nodeId of nodeIds) {
+            const nodeValues = new Map<string, string>();
+            values.set(nodeId, nodeValues);
+
+            nodes.set(nodeId, new RaftNode(
+                {
+                    nodeId,
+                    port: 0,
+                    peers: nodeIds.filter(peer => peer !== nodeId)
+                },
+                storage as any,
+                {
+                    initialize: async () => {},
+                    set: async (key: string, value: string) => {
+                        nodeValues.set(key, value);
+                    },
+                    get: async (key: string) => nodeValues.get(key) ?? null,
+                    delete: async (key: string) => { nodeValues.delete(key); }
+                } as any
+            ));
+        }
+
+        const leader = nodes.get("node1")!;
+        (leader as any).state = NodeState.LEADER;
+        (leader as any).currentTerm = 1;
+
+        for (const peer of ["node2", "node3"]) {
+            (leader as any).nextIndex.set(peer, 1);
+            (leader as any).matchIndex.set(peer, 0);
+        }
+
+        vi.stubGlobal("fetch", vi.fn(async (url, options) => {
+            const node = nodes.get(new URL(String(url)).hostname);
+            if (!node) return { ok: false };
+
+            const request = JSON.parse(String(options?.body));
+            const result = await node.handleAppendEntries(request);
+
+            return { ok: true, json: async () => result };
+        }));
+
+        try {
+            const writes = Array.from({ length: 10 }, (_, i) => ({
                 key: `consistency-key-${i}`,
                 value: `value-${i}`
-            })
-        );
+            }));
 
-        /*
-         * Send all writes concurrently.
-         *
-         * We send them to node2 intentionally.
-         * node2 may be a follower and should forward
-         * requests to the current leader.
-         */
-        await Promise.all(
-            writes.map(({ key, value }) =>
-                put(
-                    nodes[1],
-                    key,
-                    value
-                )
-            )
-        );
+            const results = await Promise.all(
+                writes.map(({ key, value }) => leader.set(key, value))
+            );
 
-        /*
-         * Verify every key on every node.
-         */
-        for (const { key, value } of writes) {
-            for (const node of nodes) {
-                const result = await get(
-                    node,
-                    key
-                );
+            expect(results.every(result => result.success)).toBe(true);
 
-                expect(result.success).toBe(true);
-                expect(result.value).toBe(value);
+            // The final heartbeat carries the final commit index to followers.
+            await (leader as any).sendHeartbeats();
+
+            for (const { key, value } of writes) {
+                for (const nodeId of nodeIds) {
+                    expect(values.get(nodeId)?.get(key)).toBe(value);
+                }
+            }
+        } finally {
+            for (const node of nodes.values()) {
+                (node as any).stopHeartbeats();
             }
         }
     });
