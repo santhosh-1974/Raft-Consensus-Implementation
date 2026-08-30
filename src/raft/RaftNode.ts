@@ -25,7 +25,7 @@ export class RaftNode {
     private log: LogEntry[] = [];
     private nextIndex = new Map<string, number>();
     private matchIndex = new Map<string, number>();
-    private replicating = new Map<string, Promise<void>>();
+    private replicating = new Map<string, Promise<number>>();
     private commitIndex = 0;
     private lastApplied = 0;
     private electionInProgress = false;
@@ -358,6 +358,7 @@ export class RaftNode {
         if (this.state !== NodeState.LEADER) {
             return;
         }
+
         await Promise.all(
             this.peers.map(peer =>
                 this.replicateToPeer(peer)
@@ -503,24 +504,55 @@ export class RaftNode {
         return result;
     }
     private async replicateEntry(entry: LogEntry): Promise<boolean> {
-        while (
-            this.state === NodeState.LEADER &&
-            this.commitIndex < entry.index
-        ) {
-            const previousCommitIndex = this.commitIndex;
+        const majority =
+            Math.floor((this.peers.length + 1) / 2) + 1;
 
-            await Promise.all(
-                this.peers.map(peer =>
-                    this.replicateToPeer(peer)
-                )
-            );
+        const replicationPromises = this.peers.map(peer =>
+            this.replicateToPeer(peer)
+        );
 
+        let replicatedCount = 1;
+
+        if (replicatedCount >= majority) {
             await this.updateCommitIndex();
-
-            if (this.commitIndex === previousCommitIndex) {
-                break;
-            }
+            return this.commitIndex >= entry.index;
         }
+
+        await new Promise<void>((resolve) => {
+            let remaining = replicationPromises.length;
+            let resolved = false;
+
+            for (const promise of replicationPromises) {
+                promise.then((replicatedIndex) => {
+                    if (resolved) {
+                        return;
+                    }
+
+                    if (replicatedIndex >= entry.index) {
+                        replicatedCount++;
+
+                        if (replicatedCount >= majority) {
+                            resolved = true;
+                            resolve();
+                            return;
+                        }
+                    }
+
+                    remaining--;
+
+                    if (remaining === 0) {
+                        resolved = true;
+                        resolve();
+                    }
+                });
+            }
+        });
+
+        if (replicatedCount < majority) {
+            return false;
+        }
+
+        await this.updateCommitIndex();
 
         return this.commitIndex >= entry.index;
     }
@@ -547,14 +579,16 @@ export class RaftNode {
         await this.persist();
     }
 
-    private replicateToPeer(peer: string): Promise<void> {
+    private replicateToPeer(peer: string): Promise<number> {
         const inFlight = this.replicating.get(peer);
 
         if (inFlight) {
             return inFlight;
         }
 
-        const replication = this.replicateToPeerInternal(peer);
+        const replication =
+            this.replicateToPeerInternal(peer);
+
         this.replicating.set(peer, replication);
 
         void replication.finally(() => {
@@ -565,11 +599,15 @@ export class RaftNode {
 
         return replication;
     }
+    private async replicateToPeerInternal(
+        peer: string
+    ): Promise<number> {
+        const maxEntriesPerAppend = 64;
 
-    private async replicateToPeerInternal(peer: string): Promise<void> {
         try {
             while (this.state === NodeState.LEADER) {
-                const next = this.nextIndex.get(peer) ?? 1;
+                const next =
+                    this.nextIndex.get(peer) ?? 1;
 
                 const prevLogIndex = next - 1;
 
@@ -578,17 +616,22 @@ export class RaftNode {
                         ? 0
                         : this.log[prevLogIndex - 1]?.term;
 
-                const entries = this.log.slice(next - 1);
+                const entries = this.log.slice(
+                    next - 1,
+                    next - 1 + maxEntriesPerAppend
+                );
 
-                // Capture the term for this specific RPC.
-                const replicationTerm = this.currentTerm;
+                const replicationTerm =
+                    this.currentTerm;
 
                 try {
                     const response = await fetch(
                         `http://${peer}/internal/append-entries`,
                         {
                             method: "POST",
-                            signal: AbortSignal.timeout(this.rpcTimeoutMs),
+                            signal: AbortSignal.timeout(
+                                this.rpcTimeoutMs
+                            ),
                             headers: {
                                 "Content-Type": "application/json"
                             },
@@ -604,13 +647,15 @@ export class RaftNode {
                     );
 
                     if (!response.ok) {
-                        return;
+                        return -1;
                     }
 
                     const result: AppendEntriesResponse =
                         await response.json();
 
-                    // Follower has a newer term.
+                    /*
+                     * Follower has a newer term.
+                     */
                     if (result.term > this.currentTerm) {
                         this.currentTerm = result.term;
                         this.state = NodeState.FOLLOWER;
@@ -619,17 +664,22 @@ export class RaftNode {
                         await this.persist();
                         this.stopHeartbeats();
 
-                        return;
+                        return -1;
                     }
 
-                    // Ignore a response belonging to an old term.
+                    /*
+                     * Response belongs to an old term.
+                     */
                     if (
                         this.state !== NodeState.LEADER ||
                         this.currentTerm !== replicationTerm
                     ) {
-                        return;
+                        return -1;
                     }
 
+                    /*
+                     * Replication succeeded.
+                     */
                     if (result.success) {
                         const lastSentIndex =
                             prevLogIndex + entries.length;
@@ -643,23 +693,36 @@ export class RaftNode {
                             peer,
                             lastSentIndex + 1
                         );
+
                         await this.updateCommitIndex();
-                        return;
+
+                        return lastSentIndex;
                     }
 
-                    // Log mismatch.
-                    // Move backwards and retry immediately.
+                    /*
+                     * Log mismatch.
+                     *
+                     * Move nextIndex backwards and retry.
+                     */
                     this.nextIndex.set(
                         peer,
-                        Math.max(1, next - 1)
+                        Math.max(
+                            1,
+                            next - maxEntriesPerAppend
+                        )
                     );
 
                 } catch {
-                    // Peer unavailable.
-                    return;
+                    /*
+                     * Peer unavailable / timeout.
+                     */
+                    return -1;
                 }
             }
+
+            return -1;
         } finally {
+            // No cleanup required here.
         }
     }
     private async updateCommitIndex(): Promise<void> {
