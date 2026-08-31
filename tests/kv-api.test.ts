@@ -15,12 +15,22 @@ const config: NodeConfig = {
 
 function createTestNode(): RaftNode {
     const values = new Map<string, string>();
-    const storage = { save: async () => {}, load: async () => null };
+    const processedRequests = new Map<
+        string,
+        { success: boolean; index: number }
+    >();
+    const storage = { save: async () => { }, load: async () => null };
     const stateMachine = {
-        initialize: async () => {},
+        initialize: async () => { },
         set: async (key: string, value: string) => { values.set(key, value); },
         get: async (key: string) => values.get(key) ?? null,
         delete: async (key: string) => { values.delete(key); },
+        getProcessedRequest: (requestId: string) =>
+            processedRequests.get(requestId),
+        recordProcessedRequest: (
+            requestId: string,
+            result: { success: boolean; index: number }
+        ) => { processedRequests.set(requestId, result); },
         getAll: async () => Object.fromEntries(values)
     };
     const node = new RaftNode(config, storage as any, stateMachine as any);
@@ -179,5 +189,180 @@ describe("KV HTTP API", () => {
         expect(response.status).toBe(200);
         expect(response.body).toEqual({ term: 3, success: true });
         expect(handleAppendEntries).toHaveBeenCalled();
+    });
+
+    it("should make duplicate PUT requests idempotent", async () => {
+        const raftNode = createTestNode();
+        const app = createApp(raftNode, config);
+
+        const first = await request(app)
+            .put("/kv/idempotent")
+            .send({
+                value: "hello",
+                requestId: "req-123"
+            });
+
+        const second = await request(app)
+            .put("/kv/idempotent")
+            .send({
+                value: "hello",
+                requestId: "req-123"
+            });
+
+        expect(first.status).toBe(200);
+        expect(second.status).toBe(200);
+
+        expect(first.body.success).toBe(true);
+        expect(second.body.success).toBe(true);
+
+        expect(second.body.index).toBe(first.body.index);
+    });
+
+    it("should process different request IDs separately", async () => {
+        const raftNode = createTestNode();
+        const app = createApp(raftNode, config);
+
+        const first = await request(app)
+            .put("/kv/idempotent")
+            .send({
+                value: "hello",
+                requestId: "req-1"
+            });
+
+        const second = await request(app)
+            .put("/kv/idempotent")
+            .send({
+                value: "world",
+                requestId: "req-2"
+            });
+
+        expect(first.status).toBe(200);
+        expect(second.status).toBe(200);
+
+        expect(first.body.index).not.toBe(
+            second.body.index
+        );
+    });
+    it("should ignore a retry with the same request ID even if the value differs", async () => {
+        const raftNode = createTestNode();
+        const app = createApp(raftNode, config);
+
+        const first = await request(app)
+            .put("/kv/idempotent")
+            .send({
+                value: "hello",
+                requestId: "req-456"
+            });
+
+        const second = await request(app)
+            .put("/kv/idempotent")
+            .send({
+                value: "different",
+                requestId: "req-456"
+            });
+
+        expect(first.status).toBe(200);
+        expect(second.status).toBe(200);
+
+        expect(second.body.index).toBe(
+            first.body.index
+        );
+
+        const value = await request(app)
+            .get("/kv/idempotent");
+
+        expect(value.body.value).toBe("hello");
+    });
+
+    it("should handle concurrent duplicate PUT requests idempotently", async () => {
+        const raftNode = createTestNode();
+        const app = createApp(raftNode, config);
+
+        const requests = Array.from({ length: 10 }, () =>
+            request(app)
+                .put("/kv/concurrent-idempotent")
+                .send({
+                    value: "hello",
+                    requestId: "concurrent-req-1"
+                })
+        );
+
+        const responses = await Promise.all(requests);
+
+        for (const response of responses) {
+            expect(response.status).toBe(200);
+            expect(response.body.success).toBe(true);
+        }
+
+        const indexes = responses.map(
+            response => response.body.index
+        );
+
+        expect(new Set(indexes).size).toBe(1);
+    });
+    it("should make duplicate DELETE requests idempotent", async () => {
+        const raftNode = createTestNode();
+        const app = createApp(raftNode, config);
+
+        const put = await request(app)
+            .put("/kv/delete-idempotent")
+            .send({
+                value: "hello",
+                requestId: "put-req"
+            });
+
+        expect(put.status).toBe(200);
+
+        const first = await request(app)
+            .delete("/kv/delete-idempotent")
+            .send({
+                requestId: "delete-req"
+            });
+
+        const second = await request(app)
+            .delete("/kv/delete-idempotent")
+            .send({
+                requestId: "delete-req"
+            });
+
+        expect(first.status).toBe(200);
+        expect(second.status).toBe(200);
+
+        expect(first.body.success).toBe(true);
+        expect(second.body.success).toBe(true);
+
+        expect(second.body.index).toBe(first.body.index);
+    });
+    it("should handle concurrent duplicate DELETE requests idempotently", async () => {
+        const raftNode = createTestNode();
+        const app = createApp(raftNode, config);
+
+        await request(app)
+            .put("/kv/concurrent-delete")
+            .send({
+                value: "hello",
+                requestId: "put-delete-test"
+            });
+
+        const requests = Array.from({ length: 10 }, () =>
+            request(app)
+                .delete("/kv/concurrent-delete")
+                .send({
+                    requestId: "concurrent-delete-req"
+                })
+        );
+
+        const responses = await Promise.all(requests);
+
+        for (const response of responses) {
+            expect(response.status).toBe(200);
+            expect(response.body.success).toBe(true);
+        }
+
+        const indexes = responses.map(
+            response => response.body.index
+        );
+
+        expect(new Set(indexes).size).toBe(1);
     });
 });

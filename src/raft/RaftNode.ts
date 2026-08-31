@@ -61,8 +61,27 @@ export class RaftNode {
             this.lastApplied = savedState.lastApplied ?? 0;
         }
         await this.stateMachine.initialize();
+        this.rebuildProcessedRequests();
         await this.persist();
         this.electionTimer.start();
+    }
+
+    private rebuildProcessedRequests(): void {
+        for (const entry of this.log) {
+            if (entry.index > this.lastApplied) {
+                break;
+            }
+
+            if (entry.command.requestId) {
+                this.stateMachine.recordProcessedRequest(
+                    entry.command.requestId,
+                    {
+                        success: true,
+                        index: entry.index
+                    }
+                );
+            }
+        }
     }
 
     private async persist(): Promise<void> {
@@ -387,12 +406,102 @@ export class RaftNode {
 
         return candidateLastIndex >= myLastIndex;
     }
-    async set(key: string, value: string) {
+    private async confirmLeadership(): Promise<boolean> {
+        if (this.state !== NodeState.LEADER) {
+            return false;
+        }
+
+        const majority =
+            Math.floor((this.peers.length + 1) / 2) + 1;
+
+        // The leader itself counts as one.
+        let acknowledgements = 1;
+
+        if (acknowledgements >= majority) {
+            return true;
+        }
+
+        const term = this.currentTerm;
+
+        const results = await Promise.all(
+            this.peers.map(async (peer) => {
+                try {
+                    const response = await fetch(
+                        `http://${peer}/internal/append-entries`,
+                        {
+                            method: "POST",
+                            signal: AbortSignal.timeout(this.rpcTimeoutMs),
+                            headers: {
+                                "Content-Type": "application/json"
+                            },
+                            body: JSON.stringify({
+                                term,
+                                leaderId: this.nodeId,
+                                prevLogIndex: this.log.length,
+                                prevLogTerm: this.getLastLogTerm(),
+                                entries: [],
+                                leaderCommit: this.commitIndex
+                            })
+                        }
+                    );
+
+                    if (!response.ok) {
+                        return false;
+                    }
+
+                    const result: AppendEntriesResponse =
+                        await response.json();
+
+                    if (result.term > this.currentTerm) {
+                        this.currentTerm = result.term;
+                        this.state = NodeState.FOLLOWER;
+                        this.votedFor = null;
+
+                        await this.persist();
+
+                        this.stopHeartbeats();
+
+                        return false;
+                    }
+
+                    return (
+                        this.state === NodeState.LEADER &&
+                        this.currentTerm === term &&
+                        result.success
+                    );
+                } catch {
+                    return false;
+                }
+            })
+        );
+
+        for (const success of results) {
+            if (success) {
+                acknowledgements++;
+
+                if (acknowledgements >= majority) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+    async set(key: string, value: string,requestId?: string) {
         if (this.state !== NodeState.LEADER) {
             return {
                 success: false,
                 leader: this.leaderId
             };
+        }
+
+        if (requestId) {
+            const previous =
+                this.stateMachine.getProcessedRequest(requestId);
+
+            if (previous) {
+                return previous;
+            }
         }
 
         let result!: {
@@ -415,7 +524,8 @@ export class RaftNode {
                 command: {
                     type: "SET",
                     key,
-                    value
+                    value,
+                    requestId
                 }
             };
 
@@ -429,6 +539,7 @@ export class RaftNode {
                 success: replicated,
                 index: entry.index
             };
+
         });
 
         this.writeQueue = operation.catch(() => { });
@@ -441,8 +552,20 @@ export class RaftNode {
         if (this.state !== NodeState.LEADER) {
             return {
                 success: false,
-                leader: null,
+                leader: this.leaderId,
                 value: null
+            };
+        }
+
+        const leadershipConfirmed =
+            await this.confirmLeadership();
+
+        if (!leadershipConfirmed) {
+            return {
+                success: false,
+                leader: this.nodeId,
+                value: null,
+                error: "leader could not confirm majority"
             };
         }
 
@@ -454,12 +577,21 @@ export class RaftNode {
             value
         };
     }
-    async delete(key: string) {
+    async delete(key: string,requestId?: string ) {
         if (this.state !== NodeState.LEADER) {
             return {
                 success: false,
                 leader: this.leaderId
             };
+        }
+
+        if (requestId) {
+            const previous =
+                this.stateMachine.getProcessedRequest(requestId);
+
+            if (previous) {
+                return previous;
+            }
         }
 
         let result!: {
@@ -481,7 +613,8 @@ export class RaftNode {
                 term: this.currentTerm,
                 command: {
                     type: "DELETE",
-                    key
+                    key,
+                    requestId
                 }
             };
 
@@ -495,6 +628,7 @@ export class RaftNode {
                 success: replicated,
                 index: entry.index
             };
+
         });
 
         this.writeQueue = operation.catch(() => { });
@@ -554,6 +688,13 @@ export class RaftNode {
 
         await this.updateCommitIndex();
 
+        // Notify followers of the newly advanced commit index.
+        await Promise.all(
+            this.peers.map(peer =>
+                this.replicateToPeerInternal(peer)
+            )
+        );
+
         return this.commitIndex >= entry.index;
     }
     private async applyCommittedEntries(): Promise<void> {
@@ -572,6 +713,16 @@ export class RaftNode {
             if (entry.command.type === "DELETE") {
                 await this.stateMachine.delete(
                     entry.command.key
+                );
+            }
+
+            if (entry.command.requestId) {
+                this.stateMachine.recordProcessedRequest(
+                    entry.command.requestId,
+                    {
+                        success: true,
+                        index: entry.index
+                    }
                 );
             }
         }

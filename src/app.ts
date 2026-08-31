@@ -22,7 +22,8 @@ export function createApp(
     async function forwardToLeader(
         method: "PUT" | "GET" | "DELETE",
         key: string,
-        value?: string
+        value?: string,
+        requestId?: string
     ) {
         const leaderId = raftNode.getLeaderId();
 
@@ -43,8 +44,8 @@ export function createApp(
             }
         };
 
-        if (value !== undefined) {
-            options.body = JSON.stringify({ value });
+        if (value !== undefined || requestId !== undefined) {
+            options.body = JSON.stringify({ value, requestId });
         }
 
         const response = await fetch(
@@ -60,7 +61,7 @@ export function createApp(
 
     app.put("/kv/:key", async (req, res) => {
         const { key } = req.params;
-        const { value } = req.body;
+        const { value, requestId } = req.body;
 
         if (!key || value === undefined) {
             return res.status(400).json({
@@ -73,7 +74,8 @@ export function createApp(
             const forwarded = await forwardToLeader(
                 "PUT",
                 key,
-                String(value)
+                String(value),
+                requestId
             );
 
             if (!forwarded) {
@@ -86,14 +88,17 @@ export function createApp(
             return res.status(forwarded.status).json(forwarded.body);
         }
 
-        const result = await raftNode.set(key, String(value));
+        const result = await raftNode.set(
+            key,
+            String(value),
+            requestId
+        );
 
         return res.status(result.success ? 200 : 503).json(result);
     });
 
     app.get("/kv/:key", async (req, res) => {
         const { key } = req.params;
-
         if (!key) {
             return res.status(400).json({
                 success: false,
@@ -121,6 +126,7 @@ export function createApp(
 
     app.delete("/kv/:key", async (req, res) => {
         const { key } = req.params;
+        const { requestId } = req.body ?? {};
 
         if (!key) {
             return res.status(400).json({
@@ -130,7 +136,12 @@ export function createApp(
         }
 
         if (raftNode.getState() !== NodeState.LEADER) {
-            const forwarded = await forwardToLeader("DELETE", key);
+            const forwarded = await forwardToLeader(
+                "DELETE",
+                key,
+                undefined,
+                requestId
+            );
 
             if (!forwarded) {
                 return res.status(503).json({
@@ -142,7 +153,7 @@ export function createApp(
             return res.status(forwarded.status).json(forwarded.body);
         }
 
-        const result = await raftNode.delete(key);
+        const result = await raftNode.delete(key, requestId);
 
         return res.status(result.success ? 200 : 503).json(result);
     });

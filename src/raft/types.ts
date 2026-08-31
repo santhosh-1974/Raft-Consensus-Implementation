@@ -11,5 +11,6 @@ export interface LogEntry {
         type: "SET" | "DELETE";
         key: string;
         value?: string;
+        requestId?: string;
     };
 }

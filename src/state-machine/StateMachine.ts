@@ -3,6 +3,13 @@ import { Data } from "./types.js";
 
 export class StateMachine {
     private data: Data = {};
+    private processedRequests = new Map<
+        string,
+        {
+            success: boolean;
+            index: number;
+        }
+    >();
 
     constructor(
         private readonly storage: DataStorage
@@ -26,6 +33,20 @@ export class StateMachine {
         delete this.data[key];
 
         await this.storage.save(this.data);
+    }
+
+    getProcessedRequest(requestId: string) {
+        return this.processedRequests.get(requestId);
+    }
+
+    recordProcessedRequest(
+        requestId: string,
+        result: {
+            success: boolean;
+            index: number;
+        }
+    ): void {
+        this.processedRequests.set(requestId, result);
     }
 
     getAll(): Data {

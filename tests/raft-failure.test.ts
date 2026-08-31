@@ -588,4 +588,167 @@ describe("Raft failure recovery", () => {
             ).stopHeartbeats();
         }
     });
+    it("should discard an uncommitted entry from a crashed leader", async () => {
+        const nodes = new Map<string, RaftNode>();
+
+        const stateMachines = new Map<string, any>();
+
+        for (const nodeId of ["node1", "node2", "node3"]) {
+            const sm = {
+                initialize: async () => { },
+                set: vi.fn(async () => { }),
+                get: vi.fn(async () => null),
+                delete: vi.fn(async () => { }),
+            };
+
+            stateMachines.set(nodeId, sm);
+
+            nodes.set(
+                nodeId,
+                new RaftNode(
+                    {
+                        nodeId,
+                        port: 0,
+                        peers: ["node1", "node2", "node3"].filter(
+                            peer => peer !== nodeId
+                        )
+                    },
+                    mockStorage as any,
+                    sm as any
+                )
+            );
+        }
+
+        const oldLeader = nodes.get("node2")!;
+        const newLeader = nodes.get("node1")!;
+        const follower = nodes.get("node3")!;
+
+        /*
+         * node2 is the old leader.
+         */
+        (oldLeader as any).state = NodeState.LEADER;
+        (oldLeader as any).currentTerm = 1;
+
+        (oldLeader as any).nextIndex.set("node1", 1);
+        (oldLeader as any).nextIndex.set("node3", 1);
+
+        (oldLeader as any).matchIndex.set("node1", 0);
+        (oldLeader as any).matchIndex.set("node3", 0);
+
+        /*
+         * node1 and node3 are available.
+         */
+        const availableNodes = new Set([
+            "node1",
+            "node2",
+            "node3"
+        ]);
+
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url, options) => {
+                const nodeId = new URL(String(url)).hostname;
+
+                if (!availableNodes.has(nodeId)) {
+                    throw new Error(`${nodeId} unavailable`);
+                }
+
+                const node = nodes.get(nodeId)!;
+
+                const request = JSON.parse(
+                    String(options?.body)
+                );
+
+                const result =
+                    await node.handleAppendEntries(request);
+
+                return {
+                    ok: true,
+                    json: async () => result
+                };
+            })
+        );
+
+        try {
+            /*
+             * First write is committed.
+             */
+            const committed = await oldLeader.set(
+                "safe",
+                "value"
+            );
+
+            expect(committed.success).toBe(true);
+            expect((oldLeader as any).commitIndex).toBe(1);
+
+            /*
+             * Isolate both followers.
+             */
+            availableNodes.delete("node1");
+            availableNodes.delete("node3");
+
+            /*
+             * Second entry exists only on old leader.
+             * It must remain uncommitted.
+             */
+            const uncommitted = await oldLeader.set(
+                "unsafe",
+                "must-disappear"
+            );
+
+            expect(uncommitted.success).toBe(false);
+            expect((oldLeader as any).log).toHaveLength(2);
+            expect((oldLeader as any).commitIndex).toBe(1);
+
+            /*
+             * Crash old leader.
+             */
+            availableNodes.delete("node2");
+
+            /*
+             * Bring node1 and node3 back.
+             */
+            availableNodes.add("node1");
+            availableNodes.add("node3");
+
+            /*
+             * node1 becomes the new leader in term 2.
+             */
+            (newLeader as any).state = NodeState.LEADER;
+            (newLeader as any).currentTerm = 2;
+
+            (newLeader as any).nextIndex.set("node3", 1);
+            (newLeader as any).matchIndex.set("node3", 0);
+
+            /*
+             * New leader only has the committed prefix.
+             */
+            expect((newLeader as any).log).toHaveLength(1);
+            expect((newLeader as any).commitIndex).toBe(1);
+
+            /*
+             * The uncommitted command must not be present.
+             */
+            expect((newLeader as any).log[0].command.key)
+                .toBe("safe");
+
+            expect((newLeader as any).log[0].command.value)
+                .toBe("value");
+
+            /*
+             * The unsafe value must not be applied.
+             */
+            expect(
+                stateMachines.get("node1")!.set
+            ).not.toHaveBeenCalledWith(
+                "unsafe",
+                "must-disappear"
+            );
+
+        } finally {
+            for (const node of nodes.values()) {
+                (node as any).stopHeartbeats();
+            }
+        }
+    });
 });
