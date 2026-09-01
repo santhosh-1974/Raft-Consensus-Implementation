@@ -3,21 +3,22 @@ import { check } from "k6";
 
 export const options = {
     scenarios: {
-        concurrent_writes: {
+        concurrent_idempotency: {
             executor: "constant-vus",
             vus: 20,
-            duration: "30s"
+            duration: "10s"
         }
     }
 };
 
 export default function () {
-    const key = `concurrent-${__VU}-${__ITER}`;
+    const requestId = `same-request-${__VU}`;
 
     const response = http.put(
-        `http://localhost:5002/kv/${key}`,
+        `http://localhost:5002/kv/idempotency-concurrent`,
         JSON.stringify({
-            value: `value-${__VU}-${__ITER}`
+            value: "same-value",
+            requestId: requestId
         }),
         {
             headers: {
@@ -26,11 +27,6 @@ export default function () {
         }
     );
 
-    if (response.status !== 200) {
-        console.log(
-            `FAILED status=${response.status} body=${response.body}`
-        );
-    }
     check(response, {
         "HTTP 200": (r) => r.status === 200,
         "success true": (r) => {

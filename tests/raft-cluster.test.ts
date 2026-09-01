@@ -260,7 +260,10 @@ describe("Raft cluster integration", () => {
                 .set("x", "100");
 
             expect(result.success).toBe(true);
-            expect(result.index).toBe(1);
+            expect("index" in result).toBe(true);
+            if ("index" in result) {
+                expect(result.index).toBe(1);
+            }
 
             // Followers should contain the entry.
             for (const nodeId of ["node2", "node3"]) {
@@ -356,7 +359,10 @@ describe("Raft cluster integration", () => {
             const result = await leader.set("x", "100");
 
             expect(result.success).toBe(true);
-            expect(result.index).toBe(1);
+            expect("index" in result).toBe(true);
+            if ("index" in result) {
+                expect(result.index).toBe(1);
+            }
 
             expect((leader as any).commitIndex).toBe(1);
 
@@ -366,6 +372,76 @@ describe("Raft cluster integration", () => {
                 (nodes.get("node3") as any).log
             ).toHaveLength(0);
 
+        } finally {
+            (leader as any).stopHeartbeats();
+        }
+    });
+    it("should succeed when the entry becomes majority committed during the bounded re-check", async () => {
+        const stateMachine = {
+            initialize: vi.fn(async () => { }),
+            set: vi.fn(async () => { }),
+            get: vi.fn(async () => null),
+            delete: vi.fn(async () => { })
+        };
+
+        const nodes = new Map<string, RaftNode>();
+
+        for (const nodeId of ["node1", "node2", "node3"]) {
+            nodes.set(
+                nodeId,
+                new RaftNode(
+                    {
+                        nodeId,
+                        port: 0,
+                        peers: ["node1", "node2", "node3"].filter(
+                            peer => peer !== nodeId
+                        )
+                    },
+                    mockStorage as any,
+                    stateMachine as any
+                )
+            );
+        }
+
+        const leader = nodes.get("node1")!;
+
+        (leader as any).state = NodeState.LEADER;
+        (leader as any).currentTerm = 1;
+        (leader as any).replicationMaxRetries = 1;
+        (leader as any).replicationRetryDelayMs = 0;
+
+        for (const peer of ["node2", "node3"]) {
+            (leader as any).nextIndex.set(peer, 1);
+            (leader as any).matchIndex.set(peer, 0);
+        }
+
+        (leader as any).replicateToPeer = vi.fn(async () => -1);
+
+        let commitIndexUpdated = false;
+        const originalUpdateCommitIndex =
+            (leader as any).updateCommitIndex.bind(leader);
+
+        (leader as any).updateCommitIndex = async () => {
+            if (!commitIndexUpdated) {
+                commitIndexUpdated = true;
+                (leader as any).matchIndex.set("node2", 1);
+                (leader as any).matchIndex.set("node3", 1);
+                (leader as any).commitIndex = 1;
+                return;
+            }
+
+            return originalUpdateCommitIndex();
+        };
+
+        try {
+            const result = await leader.set("x", "100");
+
+            expect(result.success).toBe(true);
+            expect("index" in result).toBe(true);
+            if ("index" in result) {
+                expect(result.index).toBe(1);
+            }
+            expect((leader as any).commitIndex).toBe(1);
         } finally {
             (leader as any).stopHeartbeats();
         }

@@ -3,21 +3,22 @@ import { check } from "k6";
 
 export const options = {
     scenarios: {
-        concurrent_writes: {
+        follower_forward: {
             executor: "constant-vus",
-            vus: 20,
-            duration: "30s"
+            vus: 10,
+            duration: "10s"
         }
     }
 };
 
 export default function () {
-    const key = `concurrent-${__VU}-${__ITER}`;
+    const key = `forward-${__VU}-${__ITER}`;
 
     const response = http.put(
-        `http://localhost:5002/kv/${key}`,
+        `http://localhost:5001/kv/${key}`,
         JSON.stringify({
-            value: `value-${__VU}-${__ITER}`
+            value: `value-${__VU}-${__ITER}`,
+            requestId: `forward-${__VU}-${__ITER}`
         }),
         {
             headers: {
@@ -25,7 +26,6 @@ export default function () {
             }
         }
     );
-
     if (response.status !== 200) {
         console.log(
             `FAILED status=${response.status} body=${response.body}`

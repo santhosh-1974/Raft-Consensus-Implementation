@@ -365,4 +365,27 @@ describe("KV HTTP API", () => {
 
         expect(new Set(indexes).size).toBe(1);
     });
+    it("should report Raft metrics", async () => {
+        const node = createTestNode();
+        const app = createApp(node, config);
+
+        const response = await request(app)
+            .get("/metrics");
+
+        expect(response.status).toBe(200);
+
+        expect(response.body).toEqual(
+            expect.objectContaining({
+                electionsStarted: expect.any(Number),
+                leaderChanges: expect.any(Number),
+                replicationFailures: expect.any(Number),
+                entriesCommitted: expect.any(Number),
+                currentTerm: expect.any(Number),
+                state: expect.any(String),
+                commitIndex: expect.any(Number),
+                lastApplied: expect.any(Number),
+                logLength: expect.any(Number),
+            })
+        );
+    });
 });

@@ -1,4 +1,5 @@
 import express, { type Express } from "express";
+import cors from "cors";
 import { type NodeConfig } from "./node/config.js";
 import { RaftNode } from "./raft/RaftNode.js";
 import { NodeState } from "./raft/types.js";
@@ -8,8 +9,16 @@ export function createApp(
     config: NodeConfig
 ): Express {
     const app = express();
+    const frontendOrigin = "http://localhost:3000";
 
+    app.use(cors({
+        origin: frontendOrigin,
+        credentials: true,
+        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization"]
+    }));
     app.use(express.json());
+
     app.get("/health", (_req, res) => {
         res.json({
             nodeId: raftNode.getNodeId(),
@@ -17,6 +26,10 @@ export function createApp(
             term: raftNode.getTerm(),
             leaderId: raftNode.getLeaderId()
         });
+    });
+
+    app.get("/metrics", (_req, res) => {
+        res.json(raftNode.getMetrics());
     });
 
     async function forwardToLeader(

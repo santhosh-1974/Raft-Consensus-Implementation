@@ -611,7 +611,15 @@ describe("Raft failure recovery", () => {
                         port: 0,
                         peers: ["node1", "node2", "node3"].filter(
                             peer => peer !== nodeId
-                        )
+                        ),
+                        timing: {
+                            electionMinTimeoutMs: 10,
+                            electionMaxTimeoutMs: 20,
+                            heartbeatIntervalMs: 10,
+                            rpcTimeoutMs: 50,
+                            replicationMaxRetries: 0,
+                            replicationRetryDelayMs: 0
+                        }
                     },
                     mockStorage as any,
                     sm as any
@@ -750,5 +758,25 @@ describe("Raft failure recovery", () => {
                 (node as any).stopHeartbeats();
             }
         }
+    });
+    it("should shut down cleanly", async () => {
+        const node = new RaftNode(
+            {
+                nodeId: "node1",
+                port: 0,
+                peers: ["node2", "node3"],
+            },
+            mockStorage as any,
+            {
+                initialize: vi.fn(async () => { }),
+                set: vi.fn(async () => { }),
+                get: vi.fn(async () => null),
+                delete: vi.fn(async () => { }),
+            } as any
+        );
+
+        await node.initialize();
+
+        await expect(node.shutdown()).resolves.not.toThrow();
     });
 });

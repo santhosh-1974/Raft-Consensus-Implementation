@@ -8,7 +8,16 @@ import { AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, Reques
 type RaftNodeConfig = Pick<
     NodeConfig,
     "nodeId" | "port" | "peers"
->;
+> & {
+    timing?: {
+        electionMinTimeoutMs?: number;
+        electionMaxTimeoutMs?: number;
+        heartbeatIntervalMs?: number;
+        rpcTimeoutMs?: number;
+        replicationMaxRetries?: number;
+        replicationRetryDelayMs?: number;
+    };
+};
 
 export class RaftNode {
     private readonly nodeId: string;
@@ -17,7 +26,10 @@ export class RaftNode {
     private readonly electionTimer: ElectionTimer;
 
     private heartbeatTimer: NodeJS.Timeout | null = null;
-    private readonly rpcTimeoutMs = 1_000;
+    private readonly rpcTimeoutMs: number;
+    private readonly heartbeatIntervalMs: number;
+    private readonly replicationMaxRetries: number;
+    private readonly replicationRetryDelayMs: number;
     private state: NodeState = NodeState.FOLLOWER;
     private leaderId: string | null = null;
     private currentTerm = 0;
@@ -30,6 +42,12 @@ export class RaftNode {
     private lastApplied = 0;
     private electionInProgress = false;
     private writeQueue: Promise<void> = Promise.resolve();
+    private metrics = {
+        electionsStarted: 0,
+        leaderChanges: 0,
+        replicationFailures: 0,
+        entriesCommitted: 0
+    };
 
     constructor(
         config: RaftNodeConfig,
@@ -39,10 +57,17 @@ export class RaftNode {
         this.nodeId = config.nodeId;
         this.port = config.port;
         this.peers = config.peers;
+        this.rpcTimeoutMs = config.timing?.rpcTimeoutMs ?? 1_000;
+        this.heartbeatIntervalMs =
+            config.timing?.heartbeatIntervalMs ?? 500;
+        this.replicationMaxRetries =
+            config.timing?.replicationMaxRetries ?? 2;
+        this.replicationRetryDelayMs =
+            config.timing?.replicationRetryDelayMs ?? 50;
 
         this.electionTimer = new ElectionTimer(
-            1500,
-            3000,
+            config.timing?.electionMinTimeoutMs ?? 1500,
+            config.timing?.electionMaxTimeoutMs ?? 3000,
             () => {
                 if (this.state !== NodeState.LEADER) {
                     void this.startElection();
@@ -110,6 +135,17 @@ export class RaftNode {
         return this.leaderId;
     }
 
+    public getMetrics() {
+        return {
+            ...this.metrics,
+            currentTerm: this.currentTerm,
+            state: this.state,
+            commitIndex: this.commitIndex,
+            lastApplied: this.lastApplied,
+            logLength: this.log.length
+        };
+    }
+
     private async startElection(): Promise<void> {
         if (
             this.state === NodeState.LEADER ||
@@ -125,6 +161,7 @@ export class RaftNode {
 
             this.state = NodeState.CANDIDATE;
             this.currentTerm++;
+            this.metrics.electionsStarted++;
             this.votedFor = this.nodeId;
 
             await this.persist();
@@ -273,6 +310,7 @@ export class RaftNode {
             return;
         }
         this.state = NodeState.LEADER;
+        this.metrics.leaderChanges++;
         this.leaderId = this.nodeId;
         this.electionTimer.stop();
         for (const peer of this.peers) {
@@ -365,7 +403,7 @@ export class RaftNode {
         this.stopHeartbeats();
         this.heartbeatTimer = setInterval(() => {
             void this.sendHeartbeats();
-        }, 500);
+        }, this.heartbeatIntervalMs);
     }
     private stopHeartbeats(): void {
         if (this.heartbeatTimer) {
@@ -487,7 +525,7 @@ export class RaftNode {
 
         return false;
     }
-    async set(key: string, value: string,requestId?: string) {
+    async set(key: string, value: string, requestId?: string) {
         if (this.state !== NodeState.LEADER) {
             return {
                 success: false,
@@ -577,7 +615,7 @@ export class RaftNode {
             value
         };
     }
-    async delete(key: string,requestId?: string ) {
+    async delete(key: string, requestId?: string) {
         if (this.state !== NodeState.LEADER) {
             return {
                 success: false,
@@ -683,6 +721,19 @@ export class RaftNode {
         });
 
         if (replicatedCount < majority) {
+            for (
+                let retry = 0;
+                retry <= this.replicationMaxRetries;
+                retry++
+            ) {
+                await this.sleep(this.replicationRetryDelayMs);
+                await this.updateCommitIndex();
+
+                if (this.commitIndex >= entry.index) {
+                    return true;
+                }
+            }
+
             return false;
         }
 
@@ -750,6 +801,9 @@ export class RaftNode {
 
         return replication;
     }
+    private async sleep(ms: number): Promise<void> {
+        await new Promise(resolve => setTimeout(resolve, ms));
+    }
     private async replicateToPeerInternal(
         peer: string
     ): Promise<number> {
@@ -776,28 +830,60 @@ export class RaftNode {
                     this.currentTerm;
 
                 try {
-                    const response = await fetch(
-                        `http://${peer}/internal/append-entries`,
-                        {
-                            method: "POST",
-                            signal: AbortSignal.timeout(
-                                this.rpcTimeoutMs
-                            ),
-                            headers: {
-                                "Content-Type": "application/json"
-                            },
-                            body: JSON.stringify({
-                                term: replicationTerm,
-                                leaderId: this.nodeId,
-                                prevLogIndex,
-                                prevLogTerm,
-                                entries,
-                                leaderCommit: this.commitIndex
-                            })
-                        }
-                    );
+                    let response: Response | undefined;
 
-                    if (!response.ok) {
+                    for (
+                        let attempt = 0;
+                        attempt <= this.replicationMaxRetries;
+                        attempt++
+                    ) {
+                        try {
+                            response = await fetch(
+                                `http://${peer}/internal/append-entries`,
+                                {
+                                    method: "POST",
+                                    signal: AbortSignal.timeout(
+                                        this.rpcTimeoutMs
+                                    ),
+                                    headers: {
+                                        "Content-Type": "application/json"
+                                    },
+                                    body: JSON.stringify({
+                                        term: replicationTerm,
+                                        leaderId: this.nodeId,
+                                        prevLogIndex,
+                                        prevLogTerm,
+                                        entries,
+                                        leaderCommit: this.commitIndex
+                                    })
+                                }
+                            );
+
+                            if (response.ok) {
+                                break;
+                            }
+                        } catch {
+                            if (attempt === this.replicationMaxRetries) {
+                                this.metrics.replicationFailures++;
+                                return -1;
+                            }
+
+                            await this.sleep(
+                                this.replicationRetryDelayMs
+                            );
+                            continue;
+                        }
+
+                        if (attempt === this.replicationMaxRetries) {
+                            this.metrics.replicationFailures++;
+                            return -1;
+                        }
+
+                        await this.sleep(this.replicationRetryDelayMs);
+                    }
+
+                    if (!response || !response.ok) {
+                        this.metrics.replicationFailures++;
                         return -1;
                     }
 
@@ -808,6 +894,7 @@ export class RaftNode {
                      * Follower has a newer term.
                      */
                     if (result.term > this.currentTerm) {
+                        this.metrics.replicationFailures++;
                         this.currentTerm = result.term;
                         this.state = NodeState.FOLLOWER;
                         this.votedFor = null;
@@ -862,11 +949,13 @@ export class RaftNode {
                             next - maxEntriesPerAppend
                         )
                     );
+                    this.metrics.replicationFailures++;
 
                 } catch {
                     /*
                      * Peer unavailable / timeout.
                      */
+                    this.metrics.replicationFailures++;
                     return -1;
                 }
             }
@@ -897,6 +986,8 @@ export class RaftNode {
         if (entry.term !== this.currentTerm) {
             return;
         }
+        this.metrics.entriesCommitted +=
+            majorityIndex - this.commitIndex;
         this.commitIndex = majorityIndex;
         await this.applyCommittedEntries();
     }
