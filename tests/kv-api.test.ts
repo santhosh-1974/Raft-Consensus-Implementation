@@ -333,6 +333,35 @@ describe("KV HTTP API", () => {
 
         expect(second.body.index).toBe(first.body.index);
     });
+    it("should return 404 when deleting a missing key", async () => {
+        const response = await request(createApp(createTestNode(), config))
+            .delete("/kv/missing-key");
+
+        expect(response.status).toBe(404);
+        expect(response.body).toEqual({
+            success: false,
+            index: -1,
+            error: "Key not found",
+            key: "missing-key"
+        });
+    });
+    it("should preserve a missing-key response when DELETE is forwarded", async () => {
+        vi.stubGlobal("fetch", vi.fn(async () => ({
+            status: 404,
+            json: async () => ({
+                success: false,
+                index: -1,
+                error: "Key not found",
+                key: "missing-key"
+            })
+        })));
+
+        const response = await request(createApp(makeFollower(), config))
+            .delete("/kv/missing-key");
+
+        expect(response.status).toBe(404);
+        expect(response.body.error).toBe("Key not found");
+    });
     it("should handle concurrent duplicate DELETE requests idempotently", async () => {
         const raftNode = createTestNode();
         const app = createApp(raftNode, config);

@@ -168,7 +168,13 @@ export function createApp(
 
         const result = await raftNode.delete(key, requestId);
 
-        return res.status(result.success ? 200 : 503).json(result);
+        const status = result.success
+            ? 200
+            : "error" in result && result.error === "Key not found"
+                ? 404
+                : 503;
+
+        return res.status(status).json(result);
     });
 
     app.post("/internal/request-vote", async (req, res) => {

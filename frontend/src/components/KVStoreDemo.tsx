@@ -110,11 +110,12 @@ export function KVStoreDemo() {
   };
 
   return (
-    <div className="card full-width">
-      <h2>KV Store Demo</h2>
+    <div className="card">
+      <h2>KV STORE</h2>
+
       <div className="kv-controls">
         <div className="input-group">
-          <label htmlFor="targetNode">Target Node</label>
+          <label htmlFor="targetNode">TARGET NODE</label>
           <select
             id="targetNode"
             value={selectedNode}
@@ -127,28 +128,32 @@ export function KVStoreDemo() {
             ))}
           </select>
         </div>
-        <div className="input-group">
-          <label htmlFor="key">Key</label>
-          <input
-            id="key"
-            type="text"
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder="Enter key"
-          />
+
+        <div className="kv-fields">
+          <div className="input-group kv-field">
+            <label htmlFor="key">KEY</label>
+            <input
+              id="key"
+              type="text"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder="Enter key"
+            />
+          </div>
+          <div className="input-group kv-field">
+            <label htmlFor="value">VALUE</label>
+            <input
+              id="value"
+              type="text"
+              value={value}
+              onChange={(e) => setValueInput(e.target.value)}
+              placeholder="Enter value"
+            />
+          </div>
         </div>
-        <div className="input-group">
-          <label htmlFor="value">Value</label>
-          <input
-            id="value"
-            type="text"
-            value={value}
-            onChange={(e) => setValueInput(e.target.value)}
-            placeholder="Enter value"
-          />
-        </div>
-        <div className="input-group">
-          <label htmlFor="requestId">Request ID</label>
+
+        <div className="input-group kv-request-id">
+          <label htmlFor="requestId">REQUEST ID (OPTIONAL)</label>
           <input
             id="requestId"
             type="text"
@@ -157,36 +162,89 @@ export function KVStoreDemo() {
             placeholder="Auto-generated if empty"
           />
         </div>
+
         <div className="button-group">
           <button onClick={handleGet} className="btn btn-primary" disabled={isLoading}>
-            {isLoading ? 'Loading...' : 'GET'}
+            {isLoading ? 'LOADING...' : 'GET'}
           </button>
           <button onClick={handleSet} className="btn btn-success" disabled={isLoading}>
-            {isLoading ? 'Loading...' : 'SET'}
+            {isLoading ? 'LOADING...' : 'PUT'}
           </button>
           <button onClick={handleDelete} className="btn btn-danger" disabled={isLoading}>
-            {isLoading ? 'Loading...' : 'DELETE'}
+            {isLoading ? 'LOADING...' : 'DELETE'}
           </button>
         </div>
-        
-        {result && (
-          <div className="result-display">
-            <div>
-              <strong>Last Request</strong>
-              <pre>{result.request}</pre>
-            </div>
-            <div>
-              <strong>Status</strong>
-              <span className={`result-status ${result.status === 'SUCCESS' ? 'result-status-success' : 'result-status-failed'}`}>
-                {result.status}
-              </span>
-            </div>
-            <div>
-              <strong>Response</strong>
-              <pre>{result.response}</pre>
-            </div>
-          </div>
-        )}
+
+        <div className={`result-display ${result ? 'result-display-visible' : ''}`}>
+          {result ? (
+            <>
+              <div className="result-block">
+                <div style={{
+                  fontSize: '0.625rem',
+                  color: 'var(--text-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  marginBottom: '0.25rem'
+                }}>
+                  LAST REQUEST
+                </div>
+                <pre style={{
+                  background: 'var(--bg-secondary)',
+                  padding: '0.5rem',
+                  borderRadius: '4px',
+                  fontSize: '0.6875rem',
+                  color: 'var(--text-primary)',
+                  fontFamily: 'var(--font-mono)',
+                  border: '1px solid var(--border-subtle)'
+                }}>
+                  {result.request}
+                </pre>
+              </div>
+              <div className="result-block">
+                <div style={{
+                  fontSize: '0.625rem',
+                  color: 'var(--text-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  marginBottom: '0.25rem'
+                }}>
+                  STATUS
+                </div>
+                <span className={`result-status ${result.status === 'SUCCESS' ? 'result-status-success' : 'result-status-failed'}`}>
+                  {result.status === 'SUCCESS'
+                    ? 'SUCCESS'
+                    : result.response.includes('Key not found')
+                      ? '404 KEY NOT FOUND'
+                      : 'FAILED'}
+                </span>
+              </div>
+              <div className="result-block">
+                <div style={{
+                  fontSize: '0.625rem',
+                  color: 'var(--text-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  marginBottom: '0.25rem'
+                }}>
+                  RESPONSE
+                </div>
+                <pre style={{
+                  background: 'var(--bg-secondary)',
+                  padding: '0.75rem',
+                  borderRadius: '4px',
+                  fontSize: '0.75rem',
+                  color: 'var(--text-primary)',
+                  fontFamily: 'var(--font-mono)',
+                  border: '1px solid var(--border-subtle)'
+                }}>
+                  {result.response}
+                </pre>
+              </div>
+            </>
+          ) : (
+            <div className="result-empty">Waiting for operation...</div>
+          )}
+        </div>
 
         <div className="note">
           <strong>Idempotency:</strong> requestId provides idempotent write handling. Retrying the same requestId does not create a duplicate state-machine operation.

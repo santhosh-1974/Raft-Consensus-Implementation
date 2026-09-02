@@ -635,6 +635,8 @@ export class RaftNode {
         let result!: {
             success: boolean;
             index: number;
+            error?: string;
+            key?: string;
         };
 
         const operation = this.writeQueue.then(async () => {
@@ -642,6 +644,17 @@ export class RaftNode {
                 result = {
                     success: false,
                     index: -1
+                };
+                return;
+            }
+
+            const existingValue = await this.stateMachine.get(key);
+            if (existingValue === null || existingValue === undefined) {
+                result = {
+                    success: false,
+                    index: -1,
+                    error: "Key not found",
+                    key
                 };
                 return;
             }
