@@ -8,7 +8,17 @@ interface OperationResult {
   status: 'SUCCESS' | 'FAILED';
 }
 
-export function KVStoreDemo() {
+export interface RecentWrite {
+  method: 'PUT' | 'DELETE';
+  key: string;
+  index: number;
+}
+
+interface KVStoreDemoProps {
+  onSuccessfulWrite: (write: RecentWrite) => void;
+}
+
+export function KVStoreDemo({ onSuccessfulWrite }: KVStoreDemoProps) {
   const [key, setKey] = useState('');
   const [value, setValueInput] = useState('');
   const [requestId, setRequestId] = useState('');
@@ -63,6 +73,9 @@ export function KVStoreDemo() {
     const id = requestId.trim() || generateRequestId();
     try {
       const response: KVResponse = await apiSetValue(selectedNode, key, value, id);
+      if (response.success) {
+        onSuccessfulWrite({ method: 'PUT', key, index: response.index });
+      }
       setResult({
         request: `PUT /kv/${key}`,
         response: JSON.stringify(response, null, 2),
@@ -93,6 +106,9 @@ export function KVStoreDemo() {
     const id = requestId.trim() || generateRequestId();
     try {
       const response: KVResponse = await deleteValue(selectedNode, key, id);
+      if (response.success) {
+        onSuccessfulWrite({ method: 'DELETE', key, index: response.index });
+      }
       setResult({
         request: `DELETE /kv/${key}`,
         response: JSON.stringify(response, null, 2),

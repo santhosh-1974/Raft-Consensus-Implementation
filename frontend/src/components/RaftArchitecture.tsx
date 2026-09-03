@@ -1,10 +1,12 @@
 import type { NodeInfo } from '../types/api';
+import type { RecentWrite } from './KVStoreDemo';
 
 interface RaftArchitectureProps {
   nodeData: NodeInfo[];
+  recentWrite: RecentWrite | null;
 }
 
-export function RaftArchitecture({ nodeData }: RaftArchitectureProps) {
+export function RaftArchitecture({ nodeData, recentWrite }: RaftArchitectureProps) {
   const onlineNodes = nodeData.filter(n => n.health !== null);
   const leaders = onlineNodes.filter(n => n.health?.state === 'LEADER');
   const currentLeader = leaders.length > 0 ? leaders[0] : null;
@@ -27,6 +29,15 @@ export function RaftArchitecture({ nodeData }: RaftArchitectureProps) {
 
   const commitIndex = getCommitIndex();
   const currentTerm = currentLeader?.health?.term ?? followers[0]?.health?.term ?? candidates[0]?.health?.term ?? 0;
+  const committedNodeCount = recentWrite
+    ? nodeData.filter(node => node.health !== null && (node.metrics?.commitIndex ?? -1) >= recentWrite.index).length
+    : 0;
+  const hasCommittedWrite = Boolean(
+    recentWrite && currentLeader && (currentLeader.metrics?.commitIndex ?? -1) >= recentWrite.index
+  );
+  const hasAppliedWrite = Boolean(
+    recentWrite && currentLeader && (currentLeader.metrics?.lastApplied ?? -1) >= recentWrite.index
+  );
 
   const renderNode = (node: NodeInfo) => {
     const isLeader = node.health?.state === 'LEADER';
@@ -200,15 +211,25 @@ export function RaftArchitecture({ nodeData }: RaftArchitectureProps) {
           border: '1px solid var(--border-subtle)',
           width: '100%'
         }}>
-          <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>CLIENT WRITE</span>
-          <span>→</span>
-          <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>LEADER LOG</span>
-          <span>→</span>
-          <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>REPLICATED TO MAJORITY</span>
-          <span>→</span>
-          <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>COMMIT INDEX</span>
-          <span>→</span>
-          <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>STATE MACHINE</span>
+          <div className="flow-group">
+            <span className="flow-label">CLIENT WRITE</span>
+            <strong>{recentWrite ? `${recentWrite.method} /kv/${recentWrite.key}` : 'No recent write'}</strong>
+          </div>
+          <span className="flow-arrow">→</span>
+          <div className="flow-group">
+            <span className="flow-label">REPLICATED TO MAJORITY</span>
+            <strong>{recentWrite ? `${committedNodeCount} / ${nodeData.length} nodes` : 'Waiting for write'}</strong>
+          </div>
+          <span className="flow-arrow">→</span>
+          <div className="flow-group">
+            <span className="flow-label">COMMIT INDEX</span>
+            <strong>{recentWrite ? (hasCommittedWrite ? `${recentWrite.index}` : 'Committing') : '—'}</strong>
+          </div>
+          <span className="flow-arrow">→</span>
+          <div className="flow-group">
+            <span className="flow-label">STATE MACHINE</span>
+            <strong>{recentWrite ? (hasAppliedWrite ? 'Applied' : hasCommittedWrite ? 'Applying' : 'Pending') : 'Waiting for write'}</strong>
+          </div>
         </div>
 
         {/* Current State */}

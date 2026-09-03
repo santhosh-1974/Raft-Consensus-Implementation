@@ -1210,3 +1210,54 @@ button {
         padding: 0 8px !important;
     }
 }
+
+.topology-sequence {
+    display: grid !important;
+    grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr) auto minmax(110px, .7fr) auto minmax(150px, 1fr) !important;
+    align-items: center;
+    justify-content: stretch !important;
+    text-align: left;
+}
+
+.flow-group {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.flow-label {
+    color: var(--dim);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .1em;
+}
+
+.flow-group strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font: 500 11px var(--mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.flow-arrow {
+    color: var(--cyan);
+    font: 14px var(--mono);
+}
+
+@media (max-width: 650px) {
+    .topology-sequence {
+        grid-template-columns: minmax(130px, 1fr) auto minmax(130px, 1fr) !important;
+        justify-content: flex-start !important;
+        overflow-x: auto;
+    }
+
+    .topology-sequence .flow-arrow {
+        display: none;
+    }
+
+    .topology-sequence .flow-group {
+        padding: 4px 0;
+    }
+}

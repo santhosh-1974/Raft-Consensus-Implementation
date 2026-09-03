@@ -5,7 +5,7 @@ import { RaftMetrics } from './components/RaftMetrics';
 import { RaftArchitecture } from './components/RaftArchitecture';
 import { ClusterConvergence } from './components/ClusterConvergence';
 import { ClusterEvents } from './components/ClusterEvents';
-import { KVStoreDemo } from './components/KVStoreDemo';
+import { KVStoreDemo, type RecentWrite } from './components/KVStoreDemo';
 import { FailureSimulation } from './components/FailureSimulation';
 import { useClusterData } from './hooks/useClusterData';
 
@@ -13,6 +13,7 @@ function App() {
   const { nodeData } = useClusterData();
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [activeSection, setActiveSection] = useState('overview');
+  const [recentWrite, setRecentWrite] = useState<RecentWrite | null>(null);
 
   useEffect(() => {
     setLastUpdated(new Date());
@@ -105,7 +106,7 @@ function App() {
               <NodeStatus nodeData={nodeData} />
             </section>
             <section id="topology" className="dashboard-section">
-              <RaftArchitecture nodeData={nodeData} />
+              <RaftArchitecture nodeData={nodeData} recentWrite={recentWrite} />
               <RaftMetrics nodeData={nodeData} />
             </section>
             <section id="replication" className="dashboard-section">
@@ -115,7 +116,7 @@ function App() {
               <ClusterEvents nodeData={nodeData} />
             </section>
             <section id="operations" className="dashboard-section operations-grid">
-              <div><KVStoreDemo /></div>
+              <div><KVStoreDemo onSuccessfulWrite={setRecentWrite} /></div>
               <FailureSimulation nodeData={nodeData} />
             </section>
           </div>
