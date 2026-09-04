@@ -6,21 +6,17 @@ The implementation is designed as an engineering demonstration of consensus, quo
 
 ## Screenshots
 
-### Dashboard Overview
-
-![Raft dashboard overview](docs/overview.png)
-
 ### Raft Topology
 
-![Raft topology visualization](docs/ratf_topology.png)
+![Raft topology visualization](docs/topology.png)
 
-### Metrics and Replication
+### Replication & Consensus Pipeline
 
-![Raft metrics and replication](docs/raft_metrics_and_replication.png)
+![Raft replication and consensus pipeline](docs/replication-and%20-consensus-pipeline.png)
 
-### KV Store and Failure Recovery
+### Operations & Failure Recovery
 
-![KV store and failure recovery dashboard](docs/kv_store_and_failure_recovery.png)
+![KV store and failure recovery dashboard](docs/operations-and-failure.png)
 
 ### Replication Flow
 
@@ -57,33 +53,6 @@ The cluster has fixed membership of three nodes. Each node persists Raft state a
 
 ## Architecture
 
-```text
-                         CLIENT
-                            |
-                            v
-                     +-----------+
-                     |  LEADER   |
-                     |   nodeX   |
-                     +-----+-----+
-                           |
-                      AppendEntries
-                       /         \
-                      v           v
-               +-----------+ +-----------+
-               |   nodeX   | |   nodeX   |
-               |  FOLLOWER | |  FOLLOWER |
-               +-----------+ +-----------+
-                    |             |
-                 Local Log      Local Log
-                     \           /
-                      \         /
-                       Majority
-                          |
-                        Commit
-                          |
-                    State Machine
-                    
-```
 ```mermaid
 flowchart TB
     Client[Client / Dashboard]
