@@ -12,7 +12,7 @@ The implementation is designed as an engineering demonstration of consensus, quo
 
 ### Replication & Consensus Pipeline
 
-![Raft replication and consensus pipeline](docs/replication-and%20-consensus-pipeline.png)
+![Replication and consensus pipeline](docs/replication-and-consensus-pipeline.png)
 
 ### Operations & Failure Recovery
 
