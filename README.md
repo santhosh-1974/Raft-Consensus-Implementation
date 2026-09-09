@@ -8,19 +8,26 @@ The implementation is designed as an engineering demonstration of consensus, quo
 
 ### Raft Topology
 
-![Raft topology visualization](docs/topology.png)
+![Raft topology](docs/topology.png)
+
 
 ### Replication & Consensus Pipeline
 
 ![Replication and consensus pipeline](docs/replication-and-consensus-pipeline.png)
+<<<<<<< HEAD
+=======
+
+>>>>>>> 7802911 (docs: add detailed Raft internals documentation)
 
 ### Operations & Failure Recovery
 
-![KV store and failure recovery dashboard](docs/operations-and-failure.png)
+![Operations and failure recovery](docs/operations-and-failure.png)
+
 
 ### Replication Flow
 
-![Raft replication flow diagram](docs/flow-diagram.png)
+![Replication flow](docs/flow-diagram.png)
+
 
 ## Overview
 
